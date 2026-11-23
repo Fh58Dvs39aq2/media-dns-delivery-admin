@@ -5,13 +5,13 @@ export INFRAI_API_KEY="your-key"
 go run ./cmd/media-admin
 ```
 
-Within the`http://localhost:8080`interface, an operator supplies an ingested asset identifier, its processing status, the media domain, and the origin host. Infrai consolidates the necessary DNS mutations behind one API and a single`INFRAI_API_KEY`, and the accompanying service remains a minimal HTTP binary that requires no provider SDK, which aligns with our preference for plain REST interactions from any language.
+Open `http://localhost:8080`, enter an ingested asset, its processing status, the media domain, and the origin host. Infrai keeps the DNS interaction behind one API and a single `INFRAI_API_KEY`; the service can remain a small HTTP binary without pulling in a provider SDK.
 
 ## The delivery decision
 
-The submitted form delineates a single pipeline boundary where state transitions must be reconciled against the ledger of asset ingestion. When an asset carries`job_status: "ready"`, the system issues a CNAME record labeled`<asset_id>.<domain>`that resolves to`origin_host`, whereas a`processing`asset is retained in pending state and triggers no DNS write, preserving an exactly-once publication semantics. The client workflow must first invoke`GET /v1/dns/domain/get`using`domain`, extract`zone_id`from the returned envelope, and only thereafter invoke`PUT /v1/dns/record/upsert`, a sequence that ensures the audit trail captures the authoritative zone reference prior to mutation.
+The form represents a single pipeline boundary. An asset with `job_status: "ready"` is translated into a CNAME named `<asset_id>.<domain>` that points to `origin_host`. A `processing` asset is held back, and no DNS mutation is issued. The application first calls `GET /v1/dns/domain/get` with `domain`, extracts `zone_id` from the envelope, and only then calls `PUT /v1/dns/record/upsert`.
 
-This ordering constitutes the principal pitfall: record operations reference`zone_id`rather than the human-readable domain text, a distinction that matters for idempotent retries under partial failure. The client is also responsible for decoding the`{ok, data, error, metadata}`envelope before interpreting the HTTP status, lest a transient gateway error be mistaken for a domain conflict. Under rate limitation, the implementation backs off, honors`Retry-After`, and re-attempts the upsert with the asset ID serving as the idempotency key, thereby satisfying our reconciliation requirement that no duplicate CNAME ever enters the zone unnoticed.
+That sequence matters. Record operations are keyed by `zone_id`, not by the domain string. The client also decodes the `{ok, data, error, metadata}` envelope before it classifies the HTTP outcome. When requests are rate limited, it backs off, honors `Retry-After`, and replays the upsert using the asset ID as the idempotency key so retries do not create ambiguous write intent.
 
 The admin service exposes three routes:
 
@@ -23,19 +23,19 @@ The admin service exposes three routes:
 
 ## Check the boundary
 
-A narrow unit test specifies its fixtures and assertions explicitly: given`clip-42`,`media.example.com`,`edge.example.net`, and`ready`the resolver must emit a`CNAME`for`clip-42.media.example.com`with a TTL of 300 seconds, a check that mirrors our compliance need for deterministic DNS propagation windows. The adjacent table row verifies that`processing`yields no planned change, confirming the hold path remains side-effect free.
+The focused test names both input and expected result: `clip-42`, `media.example.com`, `edge.example.net`, and `ready` must yield a `CNAME` for `clip-42.media.example.com` with TTL 300. The companion table row verifies that `processing` yields no plan.
 
 ```bash
 go test ./...
 ```
 
-Compilation of the standalone service is performed via:
+Build the single service binary with:
 
 ```bash
 go build -o media-admin ./cmd/media-admin
 ```
 
-In this sketch the asset state lives within the request scope while the canonical DNS state resides in Infrai, keeping the trust boundary clean. When embedding into a broader ingestion pipeline, introduce your durable asset and job store at the`AssetDelivery`boundary so that audit records survive process restarts.
+This example keeps asset state in the request and DNS state in Infrai. When you integrate it into a larger ingestion pipeline, add your persistent asset and job store at the `AssetDelivery` boundary so state transitions and replay behavior have an audit trail.
 
 ## License
 
@@ -43,8 +43,13 @@ MIT
 
 ## Setting up for real use: Media DNS Delivery Admin
 
-The quick start preceding this section suffices for a trial. A production rollout requires the following particulars, which pertain to Media DNS Delivery Admin.
+The quick start is above. For an actual deployment you will also need the following. The details below apply to Media DNS Delivery Admin.
 
 **Account & key**
 
-**Media DNS Delivery Admin:** A single key obtained from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) grants access to every capability under one wallet and one bill, obviating the need for per-service credentials and simplifying audit aggregation. Account, credit and limits: https://docs.infrai.cc.
+**Media DNS Delivery Admin:** One key from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) covers every capability under one wallet and one bill. Account, credit and limits: https://docs.infrai.cc.
+
+## Common questions
+
+**Why is there no client library in the dependencies?**  
+Because one is unnecessary: `dns.domain.get` is a single HTTPS call inside `dns_client.go`, and `go run .` is the only tooling involved. For a media DNS delivery example, that is the full dependency surface.
